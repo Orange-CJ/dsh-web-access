@@ -49,28 +49,36 @@ Chrome 153 起，CDP 调试端口对客户端加了 Origin 门：端口在听，
 
 扩展只操作自己 `tab.create` 出来的标签，你已登录的既有标签不在 `/targets` 里，被点名一律 `UNMANAGED_TAB` → 403。详见 [extension/INSTALL.md](extension/INSTALL.md)。
 
-### 2. CDP 代理脚本（复用上游）
+### 2. CDP 代理（随仓提供）
 
-插件本体只负责注册工具。真正和浏览器通信的是 CDP 代理（`scripts/cdp-proxy.mjs`，监听 `127.0.0.1:3456`），这部分复用 [eze-is/web-access](https://github.com/eze-is/web-access)（MIT），**不在本仓内**，需要自行准备并放到 `root` 目录下：
+插件本体只负责注册工具，真正和浏览器通信的是 `scripts/cdp-proxy.mjs`（监听 `127.0.0.1:3456`）。
 
-- `scripts/cdp-proxy.mjs`
-- `scripts/browser-discovery.mjs`
-- `scripts/check-deps.mjs`
-- `scripts/find-url.mjs`
-- `templates/config.env.template`
+这部分 fork 自 [eze-is/web-access](https://github.com/eze-is/web-access)（MIT），并做了大幅修改 —— 扩展桥、origin 钉死、token 鉴权、托管标签分流都在这一层：
 
-归属与许可见 [CREDITS.md](CREDITS.md)。
+| 文件 | 上游 | 本仓 |
+|---|---|---|
+| `scripts/cdp-proxy.mjs` | 682 行 | 1137 行 |
+| `scripts/browser-discovery.mjs` | 138 行 | 292 行 |
+
+`check-deps.mjs`、`find-url.mjs`、`references/cdp-api.md` 保持上游原样。逐文件对照与 MIT 全文见 [UPSTREAM-NOTICE.md](UPSTREAM-NOTICE.md)。
 
 ## 配置
 
-插件配置项 `root`：CDP 脚本、站点笔记与截图的根目录，默认 `C:\dsh\web-access`。
+插件配置项 `root` 指向本仓根目录 —— 脚本、站点笔记、截图都在它下面。
 
-`config.env` 至少这三项：
+首跑先复制一份配置：
+
+```bash
+cp config.env.example config.env
+```
+
+`config.env` 关键四项：
 
 ```ini
 WEB_ACCESS_PORT=9229
 WEB_ACCESS_EXTENSION_ID=iaappcdoajokfdnpghgkmngcboceoegd
 WEB_ACCESS_TOKEN_ENFORCE=1
+WEB_ACCESS_BROWSER=chrome
 ```
 
 控制面 token 不写进 `config.env`（它会被 git 跟踪），放 `proxy.token`，`.gitignore` 已排除。
@@ -95,7 +103,7 @@ WEB_ACCESS_TOKEN_ENFORCE=1
 
 ## 已知限制
 
-- 默认根目录是 Windows 路径，其他平台需要显式配置 `root`。
+- `root` 指向本仓根目录。`.gitignore` 已排除 `config.env`、`proxy.token`、`sites/`、`shots/`、`node_modules/` —— 这些是运行产物或本机配置，不要提交。
 - 代理进程刻意常驻：浏览器授予的远程调试授权绑在它身上，掐掉下次要重新授权。停止需手动 `taskkill`，pid 写在 `proxy.pid`。
 - CDP 代理默认对本机进程开放，生产环境应启用 `WEB_ACCESS_TOKEN_ENFORCE=1`。
 

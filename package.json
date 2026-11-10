@@ -1,7 +1,7 @@
 {
   "name": "dsh-web-access",
   "version": "1.0.1",
-  "description": "DSH 浏览器插件：通过 CDP 直连用户自己的 Chrome，提供开页、读页、取内容、截图、标签与站点笔记工具。同时适配 web profile 与 DSH Desktop（Electron Node 模式）。",
+  "description": "DSH 浏览器插件：通过 bridge 扩展与 CDP 两通道操作你自己的浏览器，提供开页、读页、取内容、截图、标签与站点笔记工具。同时适配 web profile 与 DSH Desktop（Electron Node 模式）。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -10,7 +10,15 @@
   },
   "files": [
     "index.js",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "scripts/",
+    "extension/",
+    "references/",
+    "config.env.example",
+    "UPSTREAM-NOTICE.md",
+    "README.md",
+    "CREDITS.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
@@ -22,8 +30,15 @@
     "deepseek-harness",
     "web-access",
     "browser",
-    "cdp"
+    "cdp",
+    "chrome-extension"
   ],
+  "scripts": {
+    "test": "node scripts/test-agent-bridge.mjs"
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=22",
