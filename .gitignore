@@ -1,0 +1,7 @@
+sites/
+shots/
+proxy.pid
+proxy.log
+proxy.token
+config.env
+node_modules/

@@ -1,0 +1,21 @@
+# dsh-web-access：给 DSH 接上用户自己的浏览器（Chrome / Edge，CDP 直连，带登录态）。
+#
+# 依赖 C:\dsh\web-access\ 下的 CDP Proxy 脚本（复用 eze-is/web-access，MIT 许可）。
+# 前提（二选一）：
+#   (1) 浏览器已勾选 chrome://inspect/#remote-debugging 的
+#       "Allow remote debugging for this browser instance"；
+#   (2) 或用一个独立 profile 起调试实例并在 C:\dsh\web-access\config.env 写
+#       WEB_ACCESS_PORT：chrome --user-data-dir=<独立目录>
+#       --remote-debugging-port=9229 --remote-allow-origins=*
+#       （Chrome 会拒绝未列入 --remote-allow-origins 的调试来源，光勾开关不够）。
+#
+# 可选配置（默认值即下面注释里的）：
+#
+#   - id: dsh-web-access
+#     config:
+#       root: C:\dsh\web-access     # CDP 脚本与站点笔记/截图的根目录
+#
+- insert:
+    - id: dsh-web-access
+      name: dsh-web-access
+      config: {}

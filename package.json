@@ -1,0 +1,31 @@
+{
+  "name": "dsh-web-access",
+  "version": "1.0.0",
+  "description": "DSH 浏览器插件：通过 CDP 直连用户自己的 Chrome，提供开页、读页、取内容、截图、标签与站点笔记工具。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "web-access",
+    "browser",
+    "cdp"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}
