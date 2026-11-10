@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "dsh-web-access bridge",
+  "version": "0.2.0",
+  "description": "让本地代理通过 chrome.debugger 驱动本浏览器，免开远程调试端口、免 --remote-allow-origins。默认只操作本桥创建的托管标签。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqlczn71cSYm6sp0xRNEdJhcGss7hX2Ab3Lk2xV4LtT1DCyvbIQ3vHqDDyEqdE1f9azP/haVINWcbfi72SovS21hcC/yFtSmH12nhZAdKEECbPwTEzGgpkcWpAhlyx8ktWmyO2kRabeqKhqKSx4QVUSsALNbnBQ3XBnUebqaU4fkLPXr8JsvK9KjsGREP8W83ocYIPh0rMgYWKV4kbqEwIq+uP+a8AUHzgy1zRbAeglH7bui3F7ThppmMFtIdT22vgHsttKDOO74gvEw4GYUeKqelcQBGzkolU/GBiC78EVw0X1TINSWo9oVp0KIEkswGZ63jCkVEb5MDxL0c+ocJuQIDAQAB",
+  "permissions": ["debugger", "tabs", "alarms", "storage"],
+  "host_permissions": ["ws://127.0.0.1/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "sw.js" }
+}

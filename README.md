@@ -30,7 +30,26 @@ dsh plugin --profile <profile> add <本仓绝对路径>
 
 装完重启 DSH 才会加载。
 
-## 前置：CDP 代理
+## 前置：两件事
+
+### 1. bridge 扩展（必需）
+
+Chrome 153 起，CDP 调试端口对客户端加了 Origin 门：端口在听，但普通 `GET /json/version` 回 404 且无正文，带 Origin 的 WebSocket 升级一律 403（`Rejected an incoming WebSocket connection from the … origin`）。默认白名单为空，只有给浏览器加 `--remote-allow-origins` 才放行 —— 给日常使用的 profile 开这个口子是安全退步。
+
+所以插件走 **扩展 + `chrome.debugger`**：扩展在浏览器内部调特权 API，不经过那道门，再反向连到本机代理。
+
+装（一次性）：
+
+1. 地址栏打开 `chrome://extensions`
+2. 右上角开「开发者模式」
+3. 「加载已解压的扩展程序」→ 选本仓 `extension/` 目录
+4. 验证端到端：让插件跑一次 `web_tabs list`
+
+扩展 ID 由 `manifest.json` 里写死的 `key` 推出，恒为 `iaappcdoajokfdnpghgkmngcboceoegd`。代理只接受这一个 origin 的挂接，没配就拒绝一切连接（fail-closed）。**别改 `key`** —— 改了 ID 就变，两边要一起改。
+
+扩展只操作自己 `tab.create` 出来的标签，你已登录的既有标签不在 `/targets` 里，被点名一律 `UNMANAGED_TAB` → 403。详见 [extension/INSTALL.md](extension/INSTALL.md)。
+
+### 2. CDP 代理脚本（复用上游）
 
 插件本体只负责注册工具。真正和浏览器通信的是 CDP 代理（`scripts/cdp-proxy.mjs`，监听 `127.0.0.1:3456`），这部分复用 [eze-is/web-access](https://github.com/eze-is/web-access)（MIT），**不在本仓内**，需要自行准备并放到 `root` 目录下：
 
@@ -46,7 +65,17 @@ dsh plugin --profile <profile> add <本仓绝对路径>
 
 插件配置项 `root`：CDP 脚本、站点笔记与截图的根目录，默认 `C:\dsh\web-access`。
 
-浏览器侧二选一：
+`config.env` 至少这三项：
+
+```ini
+WEB_ACCESS_PORT=9229
+WEB_ACCESS_EXTENSION_ID=iaappcdoajokfdnpghgkmngcboceoegd
+WEB_ACCESS_TOKEN_ENFORCE=1
+```
+
+控制面 token 不写进 `config.env`（它会被 git 跟踪），放 `proxy.token`，`.gitignore` 已排除。
+
+装了扩展就不需要开调试端口。只有要走 CDP 后备通道（hex target id）才需要浏览器侧放行，二选一：
 
 1. 打开 `chrome://inspect/#remote-debugging`，勾选 "Allow remote debugging for this browser instance"；
 2. 或者用独立 profile 起调试实例：
