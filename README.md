@@ -55,6 +55,15 @@ dsh plugin --profile <profile> add <本仓绝对路径>
    ```
    并在 `config.env` 里写 `WEB_ACCESS_PORT`。Chrome 会拒绝未列入 `--remote-allow-origins` 的调试来源，只勾开关不够。
 
+## Desktop 适配
+
+同一份 `index.js` 同时跑 web profile 和 DSH Desktop（Electron Node 模式）。Desktop 下的两处差别已经在代码里处理：
+
+- 起 CDP 代理子进程时注入 `ELECTRON_RUN_AS_NODE=1`。Desktop 把 Host 跑在 Electron 的 Node 模式里，`process.execPath` 指向 Electron，直接 spawn 会再开一个图形窗口。
+- 杀旧代理之前，先用 `Get-CimInstance Win32_Process` 核对目标 pid 的命令行里是否真的包含 `cdp-proxy.mjs`。pid 会被系统复用，不核对就可能误杀无关进程。
+
+普通 Node 环境下这两段分支都不改变行为。
+
 ## 已知限制
 
 - 默认根目录是 Windows 路径，其他平台需要显式配置 `root`。

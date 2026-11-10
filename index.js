@@ -22,6 +22,14 @@ export const inject = ['tools'];
 const DEFAULT_ROOT = 'C:\\dsh\\web-access';
 const PROXY = 'http://127.0.0.1:3456';
 
+// Desktop runs the Host in Electron's Node mode.  In that process
+// `process.execPath` points at the Electron executable, so spawning it as a
+// plain child would open another GUI process instead of running the script.
+// Electron documents ELECTRON_RUN_AS_NODE as the opt-in for this exact case.
+function childRuntimeEnv() {
+  return { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+}
+
 // 刻意不 import @deepseek-ai/dsh-tools 的 defineTool。
 // 本包以 link: 装在 profile 之外，Node 解析模块时用真实路径向上找，
 // 够不到 profile 的共享依赖池（$DSH_HOME\profiles\node_modules）→
@@ -123,15 +131,30 @@ export function apply(ctx, config = {}) {
       } catch {
         /* 非 JSON（截图等） */
       }
-      return { ok: true, status: res.status, json, text: text.slice(0, 3000) };
+      return {
+        // `ok` remains the transport flag for existing retry paths.
+        ok: true,
+        httpOk: res.ok,
+        status: res.status,
+        json,
+        text: text.slice(0, 3000),
+      };
     } catch (error) {
       return { ok: false, error: (error && error.message) || String(error) };
     }
   }
 
+  function responseFailure(res, label) {
+    if (!res.ok) return label + '：' + (res.error || '代理连接失败');
+    if (!res.httpOk) return `${label} HTTP ${res.status}：${res.text || '代理拒绝了请求'}`;
+    return null;
+  }
+
   async function health() {
     const res = await call('/health', { timeout: 3000 });
-    return res.ok && res.json && res.json.status === 'ok' ? res.json : null;
+    if (!res.ok) return null;
+    if (!res.httpOk) return { httpError: true, status: res.status, text: res.text };
+    return res.json && res.json.status === 'ok' ? res.json : null;
   }
 
   // 两条通道任一可用就算「连上浏览器」：CDP 调试端口，或扩展桥（chrome.debugger）。
@@ -148,29 +171,102 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  function spawnProxy() {
+  async function processCommandLine(pid) {
+    if (process.platform !== 'win32') return '';
+    try {
+      const filter = `ProcessId = ${String(pid)}`;
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `$p = Get-CimInstance Win32_Process -Filter '${filter}'; if ($p) { $p.CommandLine }`,
+      ], { timeout: 3000, windowsHide: true, maxBuffer: 256 * 1024 });
+      return String(stdout || '');
+    } catch {
+      return '';
+    }
+  }
+
+  async function stopOwnedProxy(pid) {
+    const commandLine = await processCommandLine(pid);
+    const needle = path.resolve(PROXY_SCRIPT).toLowerCase();
+    if (!commandLine || !commandLine.toLowerCase().includes(needle)) {
+      return { stopped: false, verified: false };
+    }
+    try {
+      process.kill(pid);
+      return { stopped: true, verified: true };
+    } catch {
+      return { stopped: false, verified: true };
+    }
+  }
+
+  async function spawnProxy() {
     const old = readPid();
     if (old) {
-      try {
-        process.kill(old);
-      } catch {
-        /* 早就没了 */
-      }
+      // Never kill a stale/reused PID unless its command line names our proxy.
+      await stopOwnedProxy(old);
     }
     const fd = fs.openSync(LOG_FILE, 'a');
     try {
       const child = spawn(process.execPath, [PROXY_SCRIPT], {
         cwd: ROOT,
+        env: childRuntimeEnv(),
         stdio: ['ignore', fd, fd],
         detached: true,
         windowsHide: true,
       });
+      const pid = await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('spawn', () => resolve(child.pid));
+      });
       child.unref();
-      fs.writeFileSync(PID_FILE, String(child.pid), 'utf8');
-      return child.pid;
+      fs.writeFileSync(PID_FILE, String(pid), 'utf8');
+      return pid;
     } finally {
       fs.closeSync(fd);
     }
+  }
+
+  let ensureProxyPromise = null;
+
+  async function ensureProxyOnce() {
+    const h = await health();
+    if (h && h.httpError) {
+      return { ok: false, error: `代理健康检查返回 HTTP ${h.status}：${h.text || '请检查 token 和端口。'}` };
+    }
+    if (h) {
+      // 最小形状 /health 说明：代理开了 token 强制，而宿主这边没读到可用 token —— 真因是 401，不是连不上浏览器
+      if (h.tokenEnforced === true && h.agentConnected === undefined) {
+        return {
+          ok: false,
+          error: '代理已启用 token 鉴权，但宿主未读到 proxy.token（请求都会被 401 拒绝）。检查 config.env 的 WEB_ACCESS_TOKEN_ENFORCE 与 proxy.token 文件是否配套。',
+        };
+      }
+      if (usable(h)) return { ok: true, health: h };
+      return { ok: false, error: 'CDP 代理在运行，但连不上浏览器。' + diagnose(h) + BROWSER_HINT };
+    }
+    try {
+      await spawnProxy();
+    } catch (error) {
+      return { ok: false, error: '代理启动失败：' + ((error && error.message) || String(error)) };
+    }
+    for (let i = 0; i < 10; i++) {
+      await sleep(1200);
+      const p = await health();
+      if (p && p.httpError) {
+        return { ok: false, error: `代理启动后健康检查返回 HTTP ${p.status}：${p.text || '请检查 token 和端口。'}` };
+      }
+      if (p && usable(p)) return { ok: true, health: p };
+      if (p && !usable(p)) return { ok: false, error: 'CDP 代理已就绪，但两条通道都不可用。' + diagnose(p) + BROWSER_HINT };
+    }
+    return { ok: false, error: 'CDP 代理启动后无响应，日志：' + LOG_FILE };
+  }
+
+  function ensureProxy() {
+    if (ensureProxyPromise) return ensureProxyPromise;
+    ensureProxyPromise = ensureProxyOnce().finally(() => {
+      ensureProxyPromise = null;
+    });
+    return ensureProxyPromise;
   }
 
   const BROWSER_HINT =
@@ -192,39 +288,14 @@ export function apply(ctx, config = {}) {
     return parts.length ? ' ' + parts.join('；') + '。' : '';
   }
 
-  async function ensureProxy() {
-    const h = await health();
-    if (h) {
-      // 最小形状 /health 说明：代理开了 token 强制，而宿主这边没读到可用 token —— 真因是 401，不是连不上浏览器
-      if (h.tokenEnforced === true && h.agentConnected === undefined) {
-        return {
-          ok: false,
-          error: '代理已启用 token 鉴权，但宿主未读到 proxy.token（请求都会被 401 拒绝）。检查 config.env 的 WEB_ACCESS_TOKEN_ENFORCE 与 proxy.token 文件是否配套。',
-        };
-      }
-      if (usable(h)) return { ok: true, health: h };
-      return { ok: false, error: 'CDP 代理在运行，但连不上浏览器。' + diagnose(h) + BROWSER_HINT };
-    }
-    try {
-      spawnProxy();
-    } catch (error) {
-      return { ok: false, error: '代理启动失败：' + ((error && error.message) || String(error)) };
-    }
-    for (let i = 0; i < 10; i++) {
-      await sleep(1200);
-      const p = await health();
-      if (p && usable(p)) return { ok: true, health: p };
-      if (p && !usable(p)) return { ok: false, error: 'CDP 代理已就绪，但两条通道都不可用。' + diagnose(p) + BROWSER_HINT };
-    }
-    return { ok: false, error: 'CDP 代理启动后无响应，日志：' + LOG_FILE };
-  }
-
   async function pollReady(tabId, timeoutMs = 20000) {
     let elapsed = 0;
     let info = null;
     while (elapsed < timeoutMs) {
       const res = await call('/info?target=' + encodeURIComponent(tabId));
-      if (res.ok && res.json) {
+      const failure = responseFailure(res, '读取页面状态失败');
+      if (failure) return { error: failure };
+      if (res.ok && res.httpOk && res.json) {
         info = res.json;
         if (info.ready === 'complete') return info;
       }
@@ -307,11 +378,14 @@ export function apply(ctx, config = {}) {
         const gate = await ensureProxy();
         if (!gate.ok) return { error: gate.error };
         const created = await call('/new', { method: 'POST', body: url });
+        const createdFailure = responseFailure(created, '开页失败');
+        if (createdFailure) return { error: createdFailure };
         const tabId = created.json && created.json.targetId;
         if (!tabId) return { error: '开页失败：' + (created.error || created.text || 'unknown') };
         mineTabs.add(tabId);
         lastTabId = tabId;
         const info = await pollReady(tabId);
+        if (info && info.error) return { error: info.error, tabId };
         const host = hostOf(url);
         const note = host ? readNote(host) : { has: false };
         return {
@@ -352,17 +426,23 @@ export function apply(ctx, config = {}) {
         const q = '?target=' + encodeURIComponent(tabId);
         if (a.op === 'info') {
           const res = await call('/info' + q);
+          const failure = responseFailure(res, 'info 失败');
+          if (failure) return { error: failure, tabId };
           return { tabId, data: res.json || { error: 'info failed' } };
         }
         if (a.op === 'eval') {
           if (!a.code) return { error: 'op=eval 需要 code' };
           const res = await call('/eval' + q, { method: 'POST', body: String(a.code) });
+          const failure = responseFailure(res, 'eval 失败');
+          if (failure) return { error: failure, tabId };
           if (res.json) return { tabId, data: res.json };
           return { error: 'eval 失败：' + (res.error || res.text || 'unknown') };
         }
         if (a.op === 'click') {
           if (!a.selector) return { error: 'op=click 需要 selector' };
           const res = await call('/click' + q, { method: 'POST', body: String(a.selector) });
+          const failure = responseFailure(res, 'click 失败');
+          if (failure) return { error: failure, tabId };
           if (res.json) return { tabId, data: res.json };
           return { error: 'click 失败：' + (res.error || res.text || 'unknown') };
         }
@@ -370,6 +450,8 @@ export function apply(ctx, config = {}) {
           const y = a.y === undefined ? 1200 : Number(a.y);
           const dir = a.direction || (y < 0 ? 'up' : 'down');
           const res = await call('/scroll' + q + '&y=' + Math.abs(y) + '&direction=' + encodeURIComponent(dir));
+          const failure = responseFailure(res, 'scroll 失败');
+          if (failure) return { error: failure, tabId };
           if (res.json) return { tabId, data: res.json };
           return { error: 'scroll 失败：' + (res.error || res.text || 'unknown') };
         }
@@ -421,6 +503,8 @@ export function apply(ctx, config = {}) {
           if (!expr) return { error: '未知 mode：' + String(a.mode) };
         }
         const res = await call('/eval?target=' + encodeURIComponent(tabId), { method: 'POST', body: expr });
+        const failure = responseFailure(res, '抽取失败');
+        if (failure) return { error: failure, tabId };
         if (!res.json) return { error: '抽取失败：' + (res.error || res.text || 'unknown') };
         let value = res.json.value;
         if (typeof value === 'string') {
@@ -461,6 +545,8 @@ export function apply(ctx, config = {}) {
           '&save=1' +
           (a.format ? '&format=' + encodeURIComponent(String(a.format)) : '');
         const res = await call(q, { timeout: 45000 });
+        const failure = responseFailure(res, '截图失败');
+        if (failure) return { error: failure, tabId };
         const j = res.json || {};
         if (!j.path) return { error: '截图未落盘：' + (res.error || j.error || res.text || 'unknown') };
         // 拷贝源也要界内：j.path 来自代理响应，端口被抢注的假代理能让宿主把任意可读文件复制进 shots
@@ -522,6 +608,8 @@ export function apply(ctx, config = {}) {
 
         if (a.op === 'list') {
           const res = await call('/targets');
+          const failure = responseFailure(res, '标签列表失败');
+          if (failure) return { error: failure };
           const raw = Array.isArray(res.json) ? res.json : [];
           // 通道切换（CDP 十六进制 targetId ↔ 扩展数字标签 ID）会让集合里留下一堆对不上号的
           // 旧 ID：列表里 mine 全是 false、mineCount 却虚高，close_all_mine 还会挨个报错。
@@ -544,6 +632,8 @@ export function apply(ctx, config = {}) {
         if (a.op === 'close') {
           if (!a.tabId) return { error: 'op=close 需要 tabId' };
           const res = await call('/close?target=' + encodeURIComponent(a.tabId));
+          const failure = responseFailure(res, '关闭失败');
+          if (failure) return { error: failure, tabId: a.tabId };
           // 关不掉就别装作关掉了：报错原样返回，ID 留在集合里，状态才和现实一致。
           // 非 JSON 响应体（旧代理把 CDP error 吐成 "null"）与 success:false 同样算失败。
           if (!res.ok || !res.json || res.json.error || res.json.success === false) {
@@ -559,8 +649,9 @@ export function apply(ctx, config = {}) {
           const results = [];
           for (const id of ids) {
             const res = await call('/close?target=' + encodeURIComponent(id));
-            const okClose = res.ok && !!res.json && !res.json.error && res.json.success !== false;
-            results.push({ tabId: id, ok: okClose, error: okClose ? undefined : ((res.json && res.json.error) || 'HTTP ' + res.status) });
+            const failure = responseFailure(res, '关闭失败');
+            const okClose = !failure && !!res.json && !res.json.error && res.json.success !== false;
+            results.push({ tabId: id, ok: okClose, error: okClose ? undefined : (failure || ((res.json && res.json.error) || '关闭失败')) });
             // 只把真关掉的从集合里摘走，失败的留着，下次还能重试
             if (okClose) mineTabs.delete(id);
           }
@@ -594,6 +685,7 @@ export function apply(ctx, config = {}) {
           try {
             const { stdout } = await execFileAsync(process.execPath, [FIND_URL_SCRIPT, ...keywords], {
               cwd: ROOT,
+              env: childRuntimeEnv(),
               timeout: 30000,
               maxBuffer: 8 * 1024 * 1024,
               windowsHide: true,
@@ -614,11 +706,12 @@ export function apply(ctx, config = {}) {
   console.log('[dsh-web-access] apply 完成：5 个工具已注册');
 
   // 预热：启动后 2 秒拉一次代理，失败只记日志（首次调用会自己重试）。
-  setTimeout(() => {
+  const warmupTimer = setTimeout(() => {
     ensureProxy().catch((error) => warn('[dsh-web-access] warmup: ' + ((error && error.message) || String(error))));
   }, 2000);
 
   ctx.on('dispose', () => {
+    clearTimeout(warmupTimer);
     // 刻意不动代理进程：授权绑在它身上，常驻才是对的。
     // 要停：taskkill /PID $(Get-Content proxy.pid) /F
   });
