@@ -16,7 +16,7 @@ import path from 'node:path';
 
 const execFileAsync = promisify(execFile);
 
-export const name = 'dsh-web-access';
+export const name = 'dsh-web-access-desktop';
 export const inject = ['tools'];
 
 const DEFAULT_ROOT = 'C:\\dsh\\web-access';
@@ -406,15 +406,26 @@ export function apply(ctx, config = {}) {
       name: 'web_page',
       description:
         'Read and drive the current page of one tab. op=info returns title/url/ready; op=eval runs JavaScript and returns the value ' +
-        '(write (() => { return x })() for multi-statement code); op=click clicks a CSS selector; op=scroll scrolls (use direction, or y for a pixel delta). ' +
-        '中文：读/驱动某个标签的当前页面——info 取标题网址就绪态，eval 执行 JS 取值，click 点 CSS 选择器，scroll 滚动。不传 tabId 就用最近一次 web_open 开的标签。',
+        '(write (() => { return x })() for multi-statement code); op=click clicks a CSS selector; op=scroll scrolls (use direction, or y for a pixel delta); ' +
+        'op=navigate goes to a URL in this same tab; op=back goes back one step in history; op=clickAt clicks a selector with a real mouse event ' +
+        '(for canvas, shadow DOM, or anything that needs a user gesture); op=setFiles assigns local files to a file input. ' +
+        '中文：读/驱动某个标签的当前页面——info 取标题网址就绪态，eval 执行 JS 取值，click 点 CSS 选择器，scroll 滚动，' +
+        'navigate 在同一标签内跳转，back 后退，clickAt 用真实鼠标事件点击（canvas / Shadow DOM / 需要用户手势的弹窗），' +
+        'setFiles 给 file input 设本地文件。clickAt 和 setFiles 只在 CDP 通道可用，扩展通道下会失败。不传 tabId 就用最近一次 web_open 开的标签。',
       parameters: {
         tabId: { type: 'string', description: 'Tab id from web_open; omit to use the most recently opened tab.' },
-        op: { type: 'string', enum: ['info', 'eval', 'click', 'scroll'], required: true, description: 'Which page operation to run.' },
+        op: {
+          type: 'string',
+          enum: ['info', 'eval', 'click', 'scroll', 'navigate', 'back', 'clickAt', 'setFiles'],
+          required: true,
+          description: 'Which page operation to run.',
+        },
         code: { type: 'string', description: 'JavaScript for op=eval.' },
-        selector: { type: 'string', description: 'CSS selector for op=click.' },
+        selector: { type: 'string', description: 'CSS selector for op=click / op=clickAt / op=setFiles.' },
         direction: { type: 'string', enum: ['down', 'up', 'top', 'bottom'], description: 'Scroll direction.' },
         y: { type: 'number', description: 'Pixel delta for op=scroll.' },
+        url: { type: 'string', description: 'Destination URL for op=navigate.' },
+        files: { type: 'string', description: 'Local absolute file paths for op=setFiles, one per line.' },
       },
       output: { schema: { type: 'json' }, render: textOut },
       async execute(args) {
@@ -454,6 +465,45 @@ export function apply(ctx, config = {}) {
           if (failure) return { error: failure, tabId };
           if (res.json) return { tabId, data: res.json };
           return { error: 'scroll 失败：' + (res.error || res.text || 'unknown') };
+        }
+        if (a.op === 'navigate') {
+          if (!a.url) return { error: 'op=navigate 需要 url' };
+          const res = await call('/navigate' + q, { method: 'POST', body: String(a.url) });
+          const failure = responseFailure(res, 'navigate 失败');
+          if (failure) return { error: failure, tabId };
+          return { tabId, data: res.json || { ok: true } };
+        }
+        if (a.op === 'back') {
+          const res = await call('/back' + q);
+          const failure = responseFailure(res, 'back 失败');
+          if (failure) return { error: failure, tabId };
+          return { tabId, data: res.json || { ok: true } };
+        }
+        if (a.op === 'clickAt') {
+          if (!a.selector) return { error: 'op=clickAt 需要 selector' };
+          const res = await call('/clickAt' + q, { method: 'POST', body: String(a.selector) });
+          const failure = responseFailure(res, 'clickAt 失败');
+          if (failure) return { error: failure + '（clickAt 只用 CDP 通道：需要带 --remote-allow-origins 的调试端口，扩展通道不提供原生鼠标输入）', tabId };
+          return { tabId, data: res.json || { ok: true } };
+        }
+        if (a.op === 'setFiles') {
+          if (!a.selector) return { error: 'op=setFiles 需要 selector' };
+          const paths = String(a.files || '')
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          if (paths.length === 0) return { error: 'op=setFiles 需要 files（本地绝对路径，一行一个）' };
+          const missing = paths.filter((p) => !fs.existsSync(p));
+          if (missing.length > 0) {
+            return { error: 'op=setFiles 这些路径不存在：' + missing.join('、') + '（CDP 遇到不存在的路径会静默塞一个 0 字节文件，所以先拦下）', tabId };
+          }
+          const res = await call('/setFiles' + q, {
+            method: 'POST',
+            body: JSON.stringify({ selector: String(a.selector), files: paths }),
+          });
+          const failure = responseFailure(res, 'setFiles 失败');
+          if (failure) return { error: failure + '（setFiles 只用 CDP 通道：需要带 --remote-allow-origins 的调试端口，扩展通道不提供 DOM.setFileInputFiles）', tabId };
+          return { tabId, data: res.json || { ok: true } };
         }
         return { error: '未知 op：' + String(a.op) };
       },

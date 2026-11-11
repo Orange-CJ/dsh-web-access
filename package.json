@@ -1,6 +1,6 @@
 {
   "name": "dsh-web-access",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "DSH 浏览器插件：通过 bridge 扩展与 CDP 两通道操作你自己的浏览器，提供开页、读页、取内容、截图、标签与站点笔记工具。同时适配 web profile 与 DSH Desktop（Electron Node 模式）。",
   "type": "module",
   "main": "index.js",

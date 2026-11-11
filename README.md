@@ -11,7 +11,7 @@ DSH 自带的 web 工具抓不到需要登录的页面，也没有多标签管�
 | 工具 | 作用 | 关键参数 |
 |---|---|---|
 | `web_open` | 后台开新标签并等加载完成，返回 tabId；顺带带回该域名的站点笔记 | `url` |
-| `web_page` | 读/驱动当前页 | `op`（info / eval / click / scroll） |
+| `web_page` | 读/驱动当前页 | `op`（info / eval / click / scroll / navigate / back / clickAt / setFiles）；`url` 给 navigate，`files` 给 setFiles |
 | `web_content` | 抽内容 | `mode`（text / links / html / json） |
 | `web_shot` | 截图存文件，返回路径供读图 | `tabId`、`path`、`format` |
 | `web_tabs` | 标签与站点笔记 | `op`（list / close / close_all_mine / note / sites / find_url） |
@@ -21,6 +21,9 @@ DSH 自带的 web 工具抓不到需要登录的页面，也没有多标签管�
 - 不传 `tabId` 时，使用最近一次 `web_open` 打开的标签。
 - 只关自己开的标签（`close_all_mine`），用户原有的标签不会被碰。
 - 按域名记站点笔记，下次打开同站自动带回。
+- `op=navigate` 在同一个标签里跳转，`op=back` 后退一步；这两个是浏览一页网站的基本走法，不再需要为每一次点链接新开标签。
+- `op=clickAt` 用真实鼠标事件点击，能穿过 JS `el.click()` 失效的地方（canvas、Shadow DOM、需要用户手势才弹出的下载框）；`op=setFiles` 绕过文件选择框，直接给 `input[type=file]` 指派本地文件（`files` 一行一个绝对路径，路径不存在会直接报错——CDP 本身会静默塞一个 0 字节文件，插件在转发前先拦了）。
+- `clickAt` 和 `setFiles` 走 CDP 原生输入，**只在 CDP 通道可用**；扩展通道下会返回错误。其余六个 op 两条通道都支持。
 
 ## 安装
 
@@ -83,14 +86,17 @@ WEB_ACCESS_BROWSER=chrome
 
 控制面 token 不写进 `config.env`（它会被 git 跟踪），放 `proxy.token`，`.gitignore` 已排除。
 
-装了扩展就不需要开调试端口。只有要走 CDP 后备通道（hex target id）才需要浏览器侧放行，二选一：
+装了 bridge 扩展，日常浏览就够用了。只有 `op=clickAt` 和 `op=setFiles` 必须走 CDP 通道，这时才需要在浏览器侧放行调试端口。
 
-1. 打开 `chrome://inspect/#remote-debugging`，勾选 "Allow remote debugging for this browser instance"；
-2. 或者用独立 profile 起调试实例：
-   ```bash
-   chrome --user-data-dir=<独立目录> --remote-debugging-port=9229 --remote-allow-origins=*
-   ```
-   并在 `config.env` 里写 `WEB_ACCESS_PORT`。Chrome 会拒绝未列入 `--remote-allow-origins` 的调试来源，只勾开关不够。
+**注意：近年的 Chrome 内核浏览器一般不支持用户在默认用户目录上自己开 CDP 端口** —— `--remote-debugging-port` 会被忽略，或者被已经在运行的实例吞掉，命令行上看着加上了，`127.0.0.1:9229` 根本不听。想用 CDP 后备通道，请自行准备一个独立的调试实例：
+
+```bash
+chrome --user-data-dir=<独立目录> --remote-debugging-port=9229 --remote-allow-origins=*
+```
+
+并在 `config.env` 里写 `WEB_ACCESS_PORT`。这个实例和你的日常浏览器是两个独立进程，互不影响；bridge 扩展只需装在日常那个上，不必两处都装。
+
+`chrome://inspect/#remote-debugging` 里的 "Allow remote debugging for this browser instance" 开关在多数版本和受管环境下都不可用，别指望它。
 
 ## Desktop 适配
 
